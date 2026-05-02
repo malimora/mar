@@ -1,6 +1,7 @@
 import "./styles.css";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { isRemoteSyncEnabled, loadRemoteState, saveRemoteState } from "./lib/remoteStore";
 
 function IconBase({ children, className = "h-5 w-5", viewBox = "0 0 24 24" }) {
   return (
@@ -170,9 +171,39 @@ function ActionSheet({ open, plans, events, settings, effectiveNow, sheet, onClo
 
 function MedicationSchedulePWA() {
   const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" });
-  useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (!raw) return; setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
+  useEffect(() => { setMounted(true); if (!isBrowser()) return; (async () => {
+    try {
+      if (isRemoteSyncEnabled()) {
+        const remote = await loadRemoteState();
+        if (remote) {
+          setData((current) => normalizeAppState({ ...current, ...remote }));
+          return;
+        }
+      }
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      setData(normalizeAppState(JSON.parse(raw)));
+    } catch (error) {
+      console.error("Failed to load saved medication data", error);
+    }
+  })(); }, []);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
+  const saveTimeoutRef = useRef(null);
+  useEffect(() => { if (!mounted || !isBrowser()) return;
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); }
+    if (!isRemoteSyncEnabled()) return;
+    if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = window.setTimeout(async () => {
+      try {
+        await saveRemoteState(data);
+      } catch (error) {
+        console.error("Failed to sync medication data to Supabase", error);
+      }
+    }, 600);
+    return () => {
+      if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    };
+  }, [data, mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; function handler(event) { event.preventDefault(); setInstallPromptEvent(event); } window.addEventListener("beforeinstallprompt", handler); return () => window.removeEventListener("beforeinstallprompt", handler); }, []);
 
   const effectiveNow = liveNow; const planMap = useMemo(() => getPlanMap(data.settings.plans), [data.settings.plans]); const regularPlan = planMap.regular; const prnPlan = planMap.prn; const regularState = useMemo(() => getRegularPlanState(regularPlan, data.events, effectiveNow), [regularPlan, data.events, effectiveNow]); const prnState = useMemo(() => getPrnPlanState(prnPlan, data.events, data.settings, effectiveNow), [prnPlan, data.events, data.settings, effectiveNow]); const lastTramadol = useMemo(() => getLatestTramadolEvent(data.events, effectiveNow), [data.events, effectiveNow]); const lastRegular = useMemo(() => getLatestTakenEventByPlan(data.events, "regular", effectiveNow), [data.events, effectiveNow]); const paracetamolToday = useMemo(() => getParacetamolToday(data.events, data.settings.plans, effectiveNow), [data.events, data.settings.plans, effectiveNow]);
