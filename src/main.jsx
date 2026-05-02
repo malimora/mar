@@ -93,21 +93,6 @@ function TrashIcon({ className }) {
 
 const STORAGE_KEY = "med-schedule-pwa-v6";
 
-const DEVICE_USER_ID_KEY = "med-schedule-device-user-id";
-
-function getOrCreateDeviceUserId() {
-  if (!isBrowser()) return crypto.randomUUID();
-  try {
-    const existing = window.localStorage.getItem(DEVICE_USER_ID_KEY);
-    if (existing) return existing;
-    const created = crypto.randomUUID();
-    window.localStorage.setItem(DEVICE_USER_ID_KEY, created);
-    return created;
-  } catch (error) {
-    return crypto.randomUUID();
-  }
-}
-
 const DEFAULT_PLANS = [
   { id: "regular", label: "Regular", medication: "Tramadol 15 + Paracetamol 500mg", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], containsTramadol: true, kind: "required", paracetamolMg: 500 },
   { id: "prn", label: "As needed", medication: "Tramadol", intervalMinutes: 240, baseTimes: ["10:00", "16:00", "22:00"], containsTramadol: true, kind: "optional", paracetamolMg: 0 },
@@ -206,6 +191,9 @@ function logSupabaseError(stage, error, context = {}) {
     hint: error?.hint || null,
     ...(context || {}),
   };
+  if (reason.code === "23503" && String(reason.message || "").includes("medication_events_user_id_fkey")) {
+    reason.guidance = "Supabase insert/update requires user_id that exists in auth.users. Enable anonymous auth or sign in before cloud writes.";
+  }
   console.error(`[supabase][${ts}] ${stage} failed`, reason);
 }
 
@@ -260,7 +248,7 @@ function MedicationSchedulePWA() {
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
   useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("init:start", { mounted }); let resolvedUserId = null; try { const { data: authData, error: authError } = await supabase.auth.getUser(); if (authError) throw authError; let user = authData?.user || null; logSupabase("auth:getUser:success", { userId: user?.id || null, isAnonymous: Boolean(user?.is_anonymous) }); if (!user) { logSupabase("auth:anonymous:attempt"); const { data: anonData, error: anonError } = await supabase.auth.signInAnonymously(); if (anonError) throw anonError; user = anonData?.user || null; logSupabase("auth:anonymous:success", { userId: user?.id || null, isAnonymous: Boolean(user?.is_anonymous) }); } resolvedUserId = user?.id || null; } catch (authError) { logSupabaseError("auth:init", authError); }
-      if (!resolvedUserId) { resolvedUserId = getOrCreateDeviceUserId(); logSupabase("auth:fallback-device-user-id", { userId: resolvedUserId }); }
+      if (!resolvedUserId) { logSupabase("auth:no-user-cloud-sync-disabled", { reason: "medication_events.user_id has FK to auth.users.id" }); setSupabaseUserId(null); return; }
       if (cancelled) return; setSupabaseUserId(resolvedUserId); logSupabase("sync:read:attempt", { userId: resolvedUserId }); const { data: rows, error } = await supabase.from("medication_events").select("*").eq("user_id", resolvedUserId).order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { userId: resolvedUserId, rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); setData((current) => normalizeAppState({ ...current, events: mergeEventsPreferNewest(current.events, remoteEvents, current.settings.plans) })); } catch (error) { logSupabaseError("init", error); } })(); return () => { cancelled = true; logSupabase("init:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!mounted || !supabase || !supabaseUserId) return; (async () => { try { const rows = data.events.map((event) => mapAppEventToDb(event, supabaseUserId)); if (!rows.length) { logSupabase("sync:backfill:skip-empty", { userId: supabaseUserId }); return; } logSupabase("sync:backfill:attempt", { userId: supabaseUserId, rowCount: rows.length }); const { error } = await supabase.from("medication_events").upsert(rows, { onConflict: "id" }); if (error) throw error; logSupabase("sync:backfill:success", { userId: supabaseUserId, rowCount: rows.length }); } catch (error) { logSupabaseError("sync:backfill", error, { userId: supabaseUserId, rowCount: data.events.length }); } })(); }, [mounted, supabaseUserId, data.events]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
