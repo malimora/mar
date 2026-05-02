@@ -75,13 +75,13 @@ VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_anon_key
 ```
 
-Also enable **Anonymous sign-ins** in Supabase Auth if you want this app to persist data without a full login flow.
+Enable **Email/Password** in Supabase Auth (Authentication → Providers → Email) so users can sign in from the app.
 
-## Single-user setup (no RLS, no auth)
+## Single-user setup (shared table + app-level login)
 
 This app is a one-user tracker. Keep it simple:
 
-- Do not use Supabase Auth.
+- Use Supabase Auth only for app login (email/password).
 - Do not use RLS policies for `medication_events`.
 - Use one shared `public.medication_events` table.
 
