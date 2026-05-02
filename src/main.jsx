@@ -1,6 +1,7 @@
 import "./styles.css";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { supabase } from "./lib/supabaseClient";
 
 function IconBase({ children, className = "h-5 w-5", viewBox = "0 0 24 24" }) {
   return (
@@ -168,9 +169,41 @@ function ActionSheet({ open, plans, events, settings, effectiveNow, sheet, onClo
   return <div className="fixed inset-0 z-30 flex items-end justify-center bg-slate-900/40 p-2 sm:p-3 sm:items-center"><div className="w-full max-w-lg rounded-3xl bg-white p-4 shadow-2xl sm:p-6"><div className="flex items-start justify-between gap-4"><div><h3 className="text-xl font-semibold text-slate-900">Log {plan.label.toLowerCase()} event</h3><p className="mt-1 text-sm text-slate-600">{plan.medication}</p></div><button onClick={onClose} className="rounded-2xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700">Close</button></div>{spacingWarning?<div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900"><div className="font-semibold">Tramadol timing warning</div><div className="mt-1">A Tramadol event was logged {formatRelative(spacingWarning.elapsed)} earlier at {formatDateTime(spacingWarning.previous.actualAt)}.</div></div>:null}<div className="mt-4 grid gap-4"><Field label="Status"><select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-300">{statusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="Actual date and time"><input type="datetime-local" value={actualAt} onChange={(event) => setActualAt(event.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-slate-300" /></Field>{status === "taken" || plan.kind === "optional" ? <Field label="Pain before (optional)"><input type="number" min={0} max={10} step={1} value={painBefore} onChange={(event) => setPainBefore(event.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3" placeholder="0 to 10" /></Field> : null}{status === "taken" ? <Field label="Pain after (optional)"><input type="number" min={0} max={10} step={1} value={painAfter} onChange={(event) => setPainAfter(event.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3" placeholder="0 to 10" /></Field> : null}<Field label={plan.kind === "optional" && status === "taken" ? "Why taking this? (optional)" : "Note (optional)"}><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} className="w-full rounded-2xl border border-slate-200 px-4 py-3" placeholder={plan.kind === "optional" && status === "taken" ? "Pain flare after physio, night pain, swelling..." : "Anything useful to remember"} /></Field><div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">The time defaults to now, but you can override it here for historical entries or corrections.</div></div><div className="mt-5 flex gap-3"><button onClick={() => { const parsedDate = fromLocalInputValue(actualAt); if (!parsedDate) { alert("Please enter a valid date and time."); return; } onConfirm({ planId: plan.id, status, actualAt: parsedDate.toISOString(), painBefore: parsePainValue(painBefore), painAfter: parsePainValue(painAfter), note: String(note || "").trim() }); }} className="flex-1 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white">Save event</button><button onClick={onClose} className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700">Cancel</button></div></div></div>;
 }
 
+
+function mapDbEventToApp(row) {
+  return {
+    id: row.id,
+    planId: row.plan_id,
+    status: row.status,
+    actualAt: row.actual_at,
+    note: row.note || "",
+    painBefore: row.pain_before,
+    painAfter: row.pain_after,
+    createdAt: row.created_at,
+    containsTramadol: Boolean(row.contains_tramadol),
+  };
+}
+
+function mapAppEventToDb(event, userId) {
+  return {
+    id: event.id,
+    user_id: userId,
+    plan_id: event.planId,
+    status: event.status,
+    actual_at: event.actualAt,
+    note: event.note || "",
+    pain_before: event.painBefore,
+    pain_after: event.painAfter,
+    contains_tramadol: Boolean(event.containsTramadol),
+    created_at: event.createdAt,
+  };
+}
+
 function MedicationSchedulePWA() {
-  const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" });
-  useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (!raw) return; setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
+  const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" }); const [supabaseUserId, setSupabaseUserId] = useState(null);
+  useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
+
+  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { const { data: authData, error: authError } = await supabase.auth.getUser(); let user = authData?.user || null; if (!user) { const { data: anonData, error: anonError } = await supabase.auth.signInAnonymously(); if (anonError) throw anonError; user = anonData?.user || null; } if (!user) return; if (cancelled) return; setSupabaseUserId(user.id); const { data: rows, error } = await supabase.from("medication_events").select("*").eq("user_id", user.id).order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; const remoteEvents = (rows || []).map(mapDbEventToApp); setData((current) => normalizeAppState({ ...current, events: remoteEvents })); } catch (error) { console.error("Supabase sync initialization failed", error); } })(); return () => { cancelled = true; }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; function handler(event) { event.preventDefault(); setInstallPromptEvent(event); } window.addEventListener("beforeinstallprompt", handler); return () => window.removeEventListener("beforeinstallprompt", handler); }, []);
@@ -180,8 +213,8 @@ function MedicationSchedulePWA() {
   function updateUI(nextUi) { setData((current) => ({ ...current, ui: nextUi })); }
   function updateSettings(nextSettings) { setData((current) => ({ ...current, settings: { ...current.settings, ...nextSettings, reminders: { ...current.settings.reminders, ...((nextSettings && nextSettings.reminders) || {}) }, plans: Array.isArray(nextSettings && nextSettings.plans) ? normalizePlans(nextSettings.plans) : current.settings.plans } })); }
   function resetSettings() { setData((current) => ({ ...current, settings: cloneDefaultSettings() })); }
-  function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: `${payload.planId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); closeSheet(); }
-  function deleteEvent(eventId) { if (isBrowser() && typeof window.confirm === "function") { const confirmed = window.confirm("Delete this event?"); if (!confirmed) return; } setData((current) => ({ ...current, events: current.events.filter((event) => event.id !== eventId) })); }
+  async function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: crypto.randomUUID(), planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); if (supabase && supabaseUserId) { try { const { error } = await supabase.from("medication_events").insert(mapAppEventToDb(nextEvent, supabaseUserId)); if (error) throw error; } catch (error) { console.error("Failed to write event to Supabase", error); } } closeSheet(); }
+  async function deleteEvent(eventId) { if (isBrowser() && typeof window.confirm === "function") { const confirmed = window.confirm("Delete this event?"); if (!confirmed) return; } setData((current) => ({ ...current, events: current.events.filter((event) => event.id !== eventId) })); if (supabase && supabaseUserId) { try { const { error } = await supabase.from("medication_events").delete().eq("id", eventId).eq("user_id", supabaseUserId); if (error) throw error; } catch (error) { console.error("Failed to delete event from Supabase", error); } } }
   async function requestNotifications() { if (typeof Notification === "undefined") { alert("Notifications are not supported in this preview environment."); return; } try { const permission = await Notification.requestPermission(); setNotificationPermission(permission); } catch (error) { console.error("Notification permission request failed", error); } }
   async function handleInstall() { if (!installPromptEvent) return; try { if (typeof installPromptEvent.prompt === "function") installPromptEvent.prompt(); if (installPromptEvent.userChoice) await installPromptEvent.userChoice; } catch (error) { console.error("Install prompt failed", error); } finally { setInstallPromptEvent(null); } }
 
