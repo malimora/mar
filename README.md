@@ -76,3 +76,28 @@ VITE_SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_anon_key
 ```
 
 Also enable **Anonymous sign-ins** in Supabase Auth if you want this app to persist data without a full login flow.
+
+## Single-user setup (no RLS, no auth)
+
+This app is a one-user tracker. Keep it simple:
+
+- Do not use Supabase Auth.
+- Do not use RLS policies for `medication_events`.
+- Use one shared `public.medication_events` table.
+
+Recommended table for this app:
+
+```sql
+create table if not exists public.medication_events (
+  id uuid primary key default gen_random_uuid(),
+  plan_id text not null check (plan_id in ('regular', 'prn')),
+  status text not null check (status in ('taken', 'skipped', 'not-needed')),
+  actual_at timestamptz not null,
+  note text not null default '',
+  pain_before int check (pain_before between 0 and 10),
+  pain_after int check (pain_after between 0 and 10),
+  contains_tramadol boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
