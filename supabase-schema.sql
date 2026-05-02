@@ -6,7 +6,6 @@ create extension if not exists pgcrypto;
 -- 1) Per-user medication events (required for history persistence)
 create table if not exists public.medication_events (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
   plan_id text not null check (plan_id in ('regular', 'prn')),
   status text not null check (status in ('taken', 'skipped', 'not-needed')),
   actual_at timestamptz not null,
@@ -18,8 +17,8 @@ create table if not exists public.medication_events (
   updated_at timestamptz not null default now()
 );
 
-create index if not exists medication_events_user_actual_idx
-  on public.medication_events (user_id, actual_at desc);
+create index if not exists medication_events_actual_idx
+  on public.medication_events (actual_at desc);
 
 -- 2) Per-user app settings (optional, needed for full cloud sync)
 create table if not exists public.user_settings (
@@ -34,7 +33,6 @@ create table if not exists public.user_settings (
 -- 3) Per-user medication plans (optional, needed for full cloud sync)
 create table if not exists public.user_plans (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
   plan_id text not null check (plan_id in ('regular', 'prn')),
   label text not null,
   medication text not null,
@@ -77,40 +75,3 @@ create trigger user_plans_set_updated_at
 before update on public.user_plans
 for each row execute function public.set_updated_at();
 
--- Row-level security
-alter table public.medication_events enable row level security;
-alter table public.user_settings enable row level security;
-alter table public.user_plans enable row level security;
-
--- medication_events policies
-create policy "events_select_own"
-  on public.medication_events for select
-  using (auth.uid() = user_id);
-create policy "events_insert_own"
-  on public.medication_events for insert
-  with check (auth.uid() = user_id);
-create policy "events_update_own"
-  on public.medication_events for update
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-create policy "events_delete_own"
-  on public.medication_events for delete
-  using (auth.uid() = user_id);
-
--- user_settings policies
-create policy "settings_select_own"
-  on public.user_settings for select
-  using (auth.uid() = user_id);
-create policy "settings_upsert_own"
-  on public.user_settings for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-
--- user_plans policies
-create policy "plans_select_own"
-  on public.user_plans for select
-  using (auth.uid() = user_id);
-create policy "plans_write_own"
-  on public.user_plans for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
