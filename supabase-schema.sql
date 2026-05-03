@@ -38,29 +38,12 @@ create table if not exists public.user_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
   tramadol_spacing_minutes int not null default 240 check (tramadol_spacing_minutes >= 0),
   reminders jsonb not null default '{"regularDue": true, "prnCheckIn": true, "missedRegular": true, "midnightDose": true}'::jsonb,
+  plans jsonb not null default '[]'::jsonb,
   history_filter text not null default '7d' check (history_filter in ('today', '3d', '7d', 'all')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
--- 3) Per-user medication plans
-create table if not exists public.user_plans (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  plan_id text not null check (plan_id in ('regular-tramadol', 'regular-paracetamol', 'prn')),
-  label text not null,
-  medication text not null,
-  interval_minutes int not null check (interval_minutes > 0),
-  base_times text[] not null,
-  kind text not null check (kind in ('required', 'optional')),
-  paracetamol_mg int not null default 0 check (paracetamol_mg >= 0),
-  tramadol_mg int not null default 0 check (tramadol_mg >= 0),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (user_id, plan_id)
-);
-
-create index if not exists user_plans_user_idx on public.user_plans (user_id);
 
 -- Keep updated_at fresh.
 create or replace function public.set_updated_at()
@@ -107,10 +90,6 @@ create trigger user_settings_set_updated_at
 before update on public.user_settings
 for each row execute function public.set_updated_at();
 
-drop trigger if exists user_plans_set_updated_at on public.user_plans;
-create trigger user_plans_set_updated_at
-before update on public.user_plans
-for each row execute function public.set_updated_at();
 
 drop trigger if exists dose_events_validate_items on public.dose_events;
 create constraint trigger dose_events_validate_items
@@ -123,39 +102,3 @@ create constraint trigger dose_event_items_validate_parent
 after insert or update or delete on public.dose_event_items
 deferrable initially deferred
 for each row execute function public.validate_dose_event_items();
-
--- -----------------
--- One-way migration from old medication_events
--- -----------------
-
-do $$
-begin
-  if exists (
-    select 1
-    from information_schema.tables
-    where table_schema = 'public' and table_name = 'medication_events'
-  ) then
-    insert into public.dose_events (id, plan_id, status, scheduled_for, actual_at, note, pain_before, pain_after, created_at, updated_at)
-    select id, plan_id, status, null, actual_at, note, pain_before, pain_after, created_at, updated_at
-    from public.medication_events me
-    where not exists (select 1 from public.dose_events de where de.id = me.id);
-
-    insert into public.dose_event_items (dose_event_id, medication_code, dose_mg)
-    select me.id, 'tramadol', 15
-    from public.medication_events me
-    where me.status = 'taken' and coalesce(me.tramadol_mg,15) > 0
-      and not exists (
-        select 1 from public.dose_event_items i
-        where i.dose_event_id = me.id and i.medication_code = 'tramadol'
-      );
-
-    insert into public.dose_event_items (dose_event_id, medication_code, dose_mg)
-    select me.id, 'paracetamol', 500
-    from public.medication_events me
-    where me.status = 'taken' and me.plan_id = 'regular'
-      and not exists (
-        select 1 from public.dose_event_items i
-        where i.dose_event_id = me.id and i.medication_code = 'paracetamol'
-      );
-  end if;
-end $$;
