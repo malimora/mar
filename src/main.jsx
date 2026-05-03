@@ -177,6 +177,17 @@ function ActionSheet({ open, plans, events, settings, effectiveNow, sheet, onClo
 
 
 
+
+function AuthGate({ authReady, session, email, password, authError, authBusy, onEmailChange, onPasswordChange, onLogin, onLogout, children }) {
+  if (!authReady) {
+    return <div className="min-h-screen grid place-items-center bg-slate-50 text-slate-600">Checking session…</div>;
+  }
+  if (!session?.user) {
+    return <div className="min-h-screen grid place-items-center bg-slate-50 px-4"><form onSubmit={onLogin} className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4"><h1 className="text-xl font-semibold text-slate-900">Sign in</h1><p className="text-sm text-slate-600">Use your Supabase email and password to open the app.</p><Field label="Email"><input type="email" required autoComplete="email" value={email} onChange={(e)=>onEmailChange(e.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none transition focus:border-slate-300"/></Field><Field label="Password"><input type="password" required autoComplete="current-password" value={password} onChange={(e)=>onPasswordChange(e.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none transition focus:border-slate-300"/></Field>{authError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{authError}</div> : null}<button type="submit" disabled={authBusy} className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60">{authBusy ? 'Signing in…' : 'Sign in'}</button></form></div>;
+  }
+  return <>{children}</>;
+}
+
 function logSupabase(stage, details) {
   const ts = new Date().toISOString();
   if (details === undefined) {
@@ -321,13 +332,48 @@ function getDoseItemsForEvent(event, plans) {
 }
 
 function MedicationSchedulePWA() {
-  const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [settingsSaveStatus, setSettingsSaveStatus] = useState("idle"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" });
+  const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [settingsSaveStatus, setSettingsSaveStatus] = useState("idle"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" }); const [authReady, setAuthReady] = useState(!supabase); const [session, setSession] = useState(null); const [authEmail, setAuthEmail] = useState(""); const [authPassword, setAuthPassword] = useState(""); const [authBusy, setAuthBusy] = useState(false); const [authError, setAuthError] = useState("");
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
   useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); let nextSettings = null; try { const { data: authData } = await supabase.auth.getUser(); const userId = authData?.user?.id; if (userId) { const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([supabase.from("user_plans").select("*").eq("user_id", userId), supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()]); if (userPlansError) throw userPlansError; if (userSettingsError) throw userSettingsError; nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) }; if (userSettingsRow) { nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes; nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) }; } } else { logSupabase("sync:read:settings:skipped", { reason: "no-auth-user" }); } } catch (error) { logSupabaseError("sync:read:settings", error); } setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
-  useEffect(() => { if (!isBrowser()) return undefined; function handler(event) { event.preventDefault(); setInstallPromptEvent(event); } window.addEventListener("beforeinstallprompt", handler); return () => window.removeEventListener("beforeinstallprompt", handler); }, []);
+  useEffect(() => {
+    if (!supabase) return;
+    let active = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) {
+        setAuthError(error.message || "Failed to load session.");
+      }
+      setSession(data?.session || null);
+      setAuthReady(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
+      setAuthReady(true);
+      setAuthError("");
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true);
+    setAuthError("");
+    const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword });
+    if (error) setAuthError(error.message || "Sign in failed.");
+    setAuthBusy(false);
+  }
+
+  async function handleLogout() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+  }
 
   const effectiveNow = liveNow; const planMap = useMemo(() => getPlanMap(data.settings.plans), [data.settings.plans]); const regularPlans = useMemo(() => data.settings.plans.filter((plan) => plan.kind === "required"), [data.settings.plans]); const prnPlan = planMap.prn; const regularStates = useMemo(() => regularPlans.map((plan) => ({ plan, state: getRegularPlanState(plan, data.events, effectiveNow) })), [regularPlans, data.events, effectiveNow]); const prnState = useMemo(() => getPrnPlanState(prnPlan, data.events, data.settings, effectiveNow), [prnPlan, data.events, data.settings, effectiveNow]); const lastTramadol = useMemo(() => getLatestTramadolEvent(data.events, effectiveNow), [data.events, effectiveNow]); const paracetamolToday = useMemo(() => getParacetamolToday(data.events, data.settings.plans, effectiveNow), [data.events, data.settings.plans, effectiveNow]);
   function openSheet(planId, status) { setSheet({ open: true, planId, status }); } function closeSheet() { setSheet({ open: false, planId: null, status: "taken" }); }
@@ -370,7 +416,7 @@ function MedicationSchedulePWA() {
     })();
   }, [mounted, data.settings, data.ui.historyFilter]);
 
-  return <div className="min-h-screen bg-slate-50 text-slate-900"><AppHeader installPromptEvent={installPromptEvent} onInstall={handleInstall} /><main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8"><nav className="grid grid-cols-3 gap-2 rounded-3xl border border-slate-200 bg-white p-2 shadow-sm w-full sm:w-fit">{[["today", "Today"], ["log", "History"], ["settings", "Settings"]].map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={classNames("rounded-2xl px-4 py-3 text-sm font-semibold transition", tab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50")}>{label}</button>)}</nav>{tab === "today" ? <div className="mt-6 space-y-4"><OverviewCard regularStates={regularStates} prnState={prnState} lastTramadol={lastTramadol} paracetamolToday={paracetamolToday} settings={data.settings} effectiveNow={effectiveNow} onOpen={openSheet} /><RecentEventsPanel events={data.events} plans={data.settings.plans} onDelete={deleteEvent} /></div> : null}{tab === "log" ? <section className="mt-6"><HistoryPanel events={data.events} plans={data.settings.plans} filter={data.ui.historyFilter} onFilterChange={(historyFilter) => updateUI({ ...data.ui, historyFilter })} effectiveNow={effectiveNow} onDelete={deleteEvent} /></section> : null}{tab === "settings" ? <section className="mt-6"><SettingsPanel settings={data.settings} onChange={updateSettings} onReset={resetSettings} notificationPermission={notificationPermission} onRequestNotifications={requestNotifications} saveStatus={settingsSaveStatus} /></section> : null}</main><ActionSheet open={sheet.open} plans={data.settings.plans} events={data.events} settings={data.settings} effectiveNow={effectiveNow} sheet={sheet} onClose={closeSheet} onConfirm={addEvent} /></div>;
+  return <AuthGate authReady={authReady} session={session} email={authEmail} password={authPassword} authError={authError} authBusy={authBusy} onEmailChange={setAuthEmail} onPasswordChange={setAuthPassword} onLogin={handleLogin} onLogout={handleLogout}><div className="min-h-screen bg-slate-50 text-slate-900"><AppHeader installPromptEvent={installPromptEvent} onInstall={handleInstall} /><main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8"><div className="mb-4 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm"><div className="text-slate-600">Signed in as <span className="font-semibold text-slate-900">{session?.user?.email || "Unknown user"}</span></div><button onClick={handleLogout} className="rounded-xl border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50">Log out</button></div><nav className="grid grid-cols-3 gap-2 rounded-3xl border border-slate-200 bg-white p-2 shadow-sm w-full sm:w-fit">{[["today", "Today"], ["log", "History"], ["settings", "Settings"]].map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={classNames("rounded-2xl px-4 py-3 text-sm font-semibold transition", tab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50")}>{label}</button>)}</nav>{tab === "today" ? <div className="mt-6 space-y-4"><OverviewCard regularStates={regularStates} prnState={prnState} lastTramadol={lastTramadol} paracetamolToday={paracetamolToday} settings={data.settings} effectiveNow={effectiveNow} onOpen={openSheet} /><RecentEventsPanel events={data.events} plans={data.settings.plans} onDelete={deleteEvent} /></div> : null}{tab === "log" ? <section className="mt-6"><HistoryPanel events={data.events} plans={data.settings.plans} filter={data.ui.historyFilter} onFilterChange={(historyFilter) => updateUI({ ...data.ui, historyFilter })} effectiveNow={effectiveNow} onDelete={deleteEvent} /></section> : null}{tab === "settings" ? <section className="mt-6"><SettingsPanel settings={data.settings} onChange={updateSettings} onReset={resetSettings} notificationPermission={notificationPermission} onRequestNotifications={requestNotifications} saveStatus={settingsSaveStatus} /></section> : null}</main><ActionSheet open={sheet.open} plans={data.settings.plans} events={data.events} settings={data.settings} effectiveNow={effectiveNow} sheet={sheet} onClose={closeSheet} onConfirm={addEvent} /></div></AuthGate>;
 }
 
 createRoot(document.getElementById("root")).render(<React.StrictMode><MedicationSchedulePWA /></React.StrictMode>);
