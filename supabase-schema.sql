@@ -52,9 +52,9 @@ create table if not exists public.user_plans (
   medication text not null,
   interval_minutes int not null check (interval_minutes > 0),
   base_times text[] not null,
-  contains_tramadol boolean not null default false,
   kind text not null check (kind in ('required', 'optional')),
   paracetamol_mg int not null default 0 check (paracetamol_mg >= 0),
+  tramadol_mg int not null default 0 check (tramadol_mg >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, plan_id)
@@ -143,7 +143,7 @@ begin
     insert into public.dose_event_items (dose_event_id, medication_code, dose_mg)
     select me.id, 'tramadol', 15
     from public.medication_events me
-    where me.status = 'taken' and me.contains_tramadol = true
+    where me.status = 'taken' and coalesce(me.tramadol_mg,15) > 0
       and not exists (
         select 1 from public.dose_event_items i
         where i.dose_event_id = me.id and i.medication_code = 'tramadol'
