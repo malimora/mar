@@ -2,14 +2,25 @@ export const STORAGE_KEY = "med-schedule-pwa-v5";
 
 export const DEFAULT_PLANS = [
   {
-    id: "regular",
-    label: "Regular",
-    medication: "Tramadol 15 + Paracetamol 500mg",
+    id: "regular-tramadol",
+    label: "Regular Tramadol",
+    medication: "Tramadol 15mg",
     intervalMinutes: 360,
     baseTimes: ["06:00", "12:00", "18:00", "00:00"],
     containsTramadol: true,
     kind: "required",
-    helper: "Rolling schedule based on the last regular dose.",
+    helper: "Rolling schedule based on the last regular Tramadol dose.",
+    paracetamolMg: 0,
+  },
+  {
+    id: "regular-paracetamol",
+    label: "Regular Paracetamol",
+    medication: "Paracetamol 500mg",
+    intervalMinutes: 360,
+    baseTimes: ["06:00", "12:00", "18:00", "00:00"],
+    containsTramadol: false,
+    kind: "required",
+    helper: "Rolling schedule based on the last regular Paracetamol dose.",
     paracetamolMg: 500,
   },
   {
