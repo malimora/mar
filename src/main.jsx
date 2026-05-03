@@ -207,11 +207,12 @@ function toDbPlanId(appPlanId) {
 
 function toAppPlanId(dbPlanId, containsTramadol = false) {
   if (dbPlanId === "prn") return "prn";
-  return containsTramadol ? "regular-tramadol" : "regular-tramadol";
+  return containsTramadol ? "regular-tramadol" : "regular-paracetamol";
 }
 
 function mapDbEventToApp(row) {
-  const containsTramadol = row.plan_id === "prn";
+  const items = Array.isArray(row.dose_event_items) ? row.dose_event_items : [];
+  const containsTramadol = items.some((item) => item?.medication_code === "tramadol");
   return {
     id: row.id,
     planId: toAppPlanId(row.plan_id, containsTramadol),
@@ -259,12 +260,27 @@ function mapAppEventToDb(event) {
   };
 }
 
+function getDoseItemsForEvent(event, plans) {
+  if (event.status !== "taken") return [];
+  const planMap = getPlanMap(plans);
+  const plan = planMap[event.planId];
+  if (!plan) return [];
+
+  const items = [];
+  if (Number(plan.paracetamolMg) > 0) {
+    items.push({ medication_code: "paracetamol", dose_mg: Number(plan.paracetamolMg) });
+  }
+  if (plan.containsTramadol) {
+    items.push({ medication_code: "tramadol", dose_mg: 15 });
+  }
+  return items;
+}
+
 function MedicationSchedulePWA() {
   const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" });
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
-  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); setData((current) => normalizeAppState({ ...current, events: mergeEventsPreferNewest(current.events, remoteEvents, current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
-  useEffect(() => { if (!mounted || !supabase) return; (async () => { try { const rows = data.events.map((event) => mapAppEventToDb(event)); if (!rows.length) return; logSupabase("sync:backfill:attempt", { rowCount: rows.length }); const { error } = await supabase.from(EVENTS_TABLE).upsert(rows, { onConflict: "id" }); if (error) throw error; logSupabase("sync:backfill:success", { rowCount: rows.length }); } catch (error) { logSupabaseError("sync:backfill", error, { rowCount: data.events.length }); } })(); }, [mounted, data.events]);
+  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); setData((current) => normalizeAppState({ ...current, events: mergeEventsPreferNewest(current.events, remoteEvents, current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; function handler(event) { event.preventDefault(); setInstallPromptEvent(event); } window.addEventListener("beforeinstallprompt", handler); return () => window.removeEventListener("beforeinstallprompt", handler); }, []);
@@ -274,7 +290,7 @@ function MedicationSchedulePWA() {
   function updateUI(nextUi) { setData((current) => ({ ...current, ui: nextUi })); }
   function updateSettings(nextSettings) { setData((current) => ({ ...current, settings: { ...current.settings, ...nextSettings, reminders: { ...current.settings.reminders, ...((nextSettings && nextSettings.reminders) || {}) }, plans: Array.isArray(nextSettings && nextSettings.plans) ? normalizePlans(nextSettings.plans) : current.settings.plans } })); }
   function resetSettings() { setData((current) => ({ ...current, settings: cloneDefaultSettings() })); }
-  async function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: crypto.randomUUID(), planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); if (supabase) { try { const dbEvent = mapAppEventToDb(nextEvent); logSupabase("event:insert:attempt", { eventId: dbEvent.id, planId: dbEvent.plan_id, status: dbEvent.status, actualAt: dbEvent.actual_at }); const { error } = await supabase.from(EVENTS_TABLE).insert(dbEvent); if (error) throw error; logSupabase("event:insert:success", { eventId: dbEvent.id }); } catch (error) { logSupabaseError("event:insert", error, { eventId: nextEvent.id }); } } else { logSupabase("event:insert:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId: nextEvent.id }); } closeSheet(); }
+  async function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: crypto.randomUUID(), planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); if (supabase) { try { const dbEvent = mapAppEventToDb(nextEvent); const items = getDoseItemsForEvent(nextEvent, data.settings.plans); logSupabase("event:insert:attempt", { eventId: dbEvent.id, planId: dbEvent.plan_id, status: dbEvent.status, actualAt: dbEvent.actual_at, itemCount: items.length }); const { data: createdId, error } = await supabase.rpc("log_dose_event", { p_plan_id: dbEvent.plan_id, p_status: dbEvent.status, p_scheduled_for: null, p_actual_at: dbEvent.actual_at, p_note: dbEvent.note, p_pain_before: dbEvent.pain_before, p_pain_after: dbEvent.pain_after, p_items: items }); if (error) throw error; logSupabase("event:insert:success", { eventId: createdId || dbEvent.id }); } catch (error) { logSupabaseError("event:insert", error, { eventId: nextEvent.id }); } } else { logSupabase("event:insert:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId: nextEvent.id }); } closeSheet(); }
   async function deleteEvent(eventId) { if (isBrowser() && typeof window.confirm === "function") { const confirmed = window.confirm("Delete this event?"); if (!confirmed) return; } setData((current) => ({ ...current, events: current.events.filter((event) => event.id !== eventId) })); if (supabase) { try { logSupabase("event:delete:attempt", { eventId }); const { error } = await supabase.from(EVENTS_TABLE).delete().eq("id", eventId); if (error) throw error; logSupabase("event:delete:success", { eventId }); } catch (error) { logSupabaseError("event:delete", error, { eventId }); } } else { logSupabase("event:delete:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId }); } }
   async function requestNotifications() { if (typeof Notification === "undefined") { alert("Notifications are not supported in this preview environment."); return; } try { const permission = await Notification.requestPermission(); setNotificationPermission(permission); } catch (error) { console.error("Notification permission request failed", error); } }
   async function handleInstall() { if (!installPromptEvent) return; try { if (typeof installPromptEvent.prompt === "function") installPromptEvent.prompt(); if (installPromptEvent.userChoice) await installPromptEvent.userChoice; } catch (error) { console.error("Install prompt failed", error); } finally { setInstallPromptEvent(null); } }
