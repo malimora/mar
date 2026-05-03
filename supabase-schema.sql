@@ -6,7 +6,7 @@ create extension if not exists pgcrypto;
 -- New event header table.
 create table if not exists public.dose_events (
   id uuid primary key default gen_random_uuid(),
-  plan_id text not null check (plan_id in ('regular', 'prn')),
+  plan_id text not null check (plan_id in ('regular-tramadol', 'regular-paracetamol', 'prn')),
   status text not null check (status in ('taken', 'skipped', 'not-needed')),
   scheduled_for timestamptz,
   actual_at timestamptz not null,
@@ -47,7 +47,7 @@ create table if not exists public.user_settings (
 create table if not exists public.user_plans (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  plan_id text not null check (plan_id in ('regular', 'prn')),
+  plan_id text not null check (plan_id in ('regular-tramadol', 'regular-paracetamol', 'prn')),
   label text not null,
   medication text not null,
   interval_minutes int not null check (interval_minutes > 0),

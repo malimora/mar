@@ -94,8 +94,9 @@ function TrashIcon({ className }) {
 const STORAGE_KEY = "med-schedule-pwa-v6";
 
 const DEFAULT_PLANS = [
-  { id: "regular", label: "Regular dose", medication: "Tramadol + Paracetamol", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], kind: "required", paracetamolMg: 500, tramadolMg: 50 },
-  { id: "prn", label: "As needed", medication: "PRN Tramadol", intervalMinutes: 240, baseTimes: ["10:00", "16:00", "22:00"], kind: "optional", paracetamolMg: 0, tramadolMg: 50 },
+  { id: "regular-tramadol", label: "Regular Tramadol", medication: "Tramadol 50mg", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], kind: "required", paracetamolMg: 0, tramadolMg: 50 },
+  { id: "regular-paracetamol", label: "Regular Paracetamol", medication: "Paracetamol 500mg", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], kind: "required", paracetamolMg: 500, tramadolMg: 0 },
+  { id: "prn", label: "As needed", medication: "PRN Tramadol 50mg", intervalMinutes: 240, baseTimes: ["10:00", "16:00", "22:00"], kind: "optional", paracetamolMg: 0, tramadolMg: 50 },
 ];
 const DEFAULT_SETTINGS = { plans: DEFAULT_PLANS, tramadolSpacingMinutes: 240, reminders: { regularDue: true, prnCheckIn: true, missedRegular: true, midnightDose: true } };
 const DEFAULT_UI = { historyFilter: "7d" };
@@ -198,16 +199,16 @@ function logSupabaseError(stage, error, context = {}) {
 }
 
 const EVENTS_TABLE = "dose_events";
-const DB_PLAN_IDS = new Set(["regular", "prn"]);
+const DB_PLAN_IDS = new Set(["regular-tramadol", "regular-paracetamol", "prn"]);
 
 function toDbPlanId(appPlanId) {
-  if (appPlanId === "regular" || appPlanId === "prn") return appPlanId;
+  if (DB_PLAN_IDS.has(appPlanId)) return appPlanId;
   return null;
 }
 
 function toAppPlanId(dbPlanId) {
-  if (dbPlanId === "regular" || dbPlanId === "prn") return dbPlanId;
-  return "regular";
+  if (DB_PLAN_IDS.has(dbPlanId)) return dbPlanId;
+  return "prn";
 }
 
 
@@ -234,11 +235,8 @@ function mapPlanToUserPlanRow(plan, userId) {
 
 function mapUserPlanRowsToAppPlans(rows, fallbackPlans) {
   if (!Array.isArray(rows) || !rows.length) return fallbackPlans;
-  const regularRow = rows.find((row) => row.plan_id === "regular");
-  const prnRow = rows.find((row) => row.plan_id === "prn");
-
   return normalizePlans(fallbackPlans.map((plan) => {
-    const row = plan.id === "regular" ? regularRow : plan.id === "prn" ? prnRow : null;
+    const row = rows.find((item) => item.plan_id === plan.id);
     if (!row) return plan;
     return { ...plan, label: row.label, medication: row.medication, intervalMinutes: row.interval_minutes, baseTimes: row.base_times, paracetamolMg: row.paracetamol_mg, tramadolMg: row.tramadol_mg };
   }));
