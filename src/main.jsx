@@ -199,15 +199,63 @@ function logSupabaseError(stage, error, context = {}) {
 }
 
 const EVENTS_TABLE = "dose_events";
-const DB_PLAN_IDS = new Set(["regular", "prn"]);
+const DB_PLAN_IDS = new Set(["regular-tramadol", "regular-paracetamol", "prn"]);
 
 function toDbPlanId(appPlanId) {
-  return appPlanId === "prn" ? "prn" : "regular";
+  if (appPlanId === "prn") return "prn";
+  if (appPlanId === "regular-tramadol") return "regular-tramadol";
+  if (appPlanId === "regular-paracetamol") return "regular-paracetamol";
+  return null;
 }
 
 function toAppPlanId(dbPlanId, containsTramadol = false) {
   if (dbPlanId === "prn") return "prn";
+  if (dbPlanId === "regular-tramadol") return "regular-tramadol";
+  if (dbPlanId === "regular-paracetamol") return "regular-paracetamol";
   return containsTramadol ? "regular-tramadol" : "regular-paracetamol";
+}
+
+
+
+function toDbPlanIdForSettings(appPlanId) {
+  return toDbPlanId(appPlanId);
+}
+
+function mapPlanToUserPlanRow(plan, userId) {
+  const dbPlanId = toDbPlanIdForSettings(plan.id);
+  if (!dbPlanId || !userId) return null;
+  return {
+    user_id: userId,
+    plan_id: dbPlanId,
+    label: plan.label,
+    medication: plan.medication,
+    interval_minutes: Number(plan.intervalMinutes) || 1,
+    base_times: Array.isArray(plan.baseTimes) ? plan.baseTimes : [],
+    contains_tramadol: Boolean(plan.containsTramadol),
+    kind: plan.kind,
+    paracetamol_mg: Number(plan.paracetamolMg) || 0,
+  };
+}
+
+function mapUserPlanRowsToAppPlans(rows, fallbackPlans) {
+  if (!Array.isArray(rows) || !rows.length) return fallbackPlans;
+  const regularRows = rows.filter((row) => row.plan_id === "regular-tramadol" || row.plan_id === "regular-paracetamol" || row.plan_id === "regular");
+  const prnRow = rows.find((row) => row.plan_id === "prn");
+  const regularTramadol = regularRows.find((row) => row.plan_id === "regular-tramadol") || regularRows.find((row) => row.contains_tramadol === true);
+  const regularParacetamol = regularRows.find((row) => row.plan_id === "regular-paracetamol") || regularRows.find((row) => row.contains_tramadol === false) || regularRows[0];
+
+  return normalizePlans(fallbackPlans.map((plan) => {
+    if (plan.id === "regular-tramadol" && regularTramadol) {
+      return { ...plan, label: regularTramadol.label, medication: regularTramadol.medication, intervalMinutes: regularTramadol.interval_minutes, baseTimes: regularTramadol.base_times, paracetamolMg: regularTramadol.paracetamol_mg, containsTramadol: true };
+    }
+    if (plan.id === "regular-paracetamol" && regularParacetamol) {
+      return { ...plan, label: regularParacetamol.label, medication: regularParacetamol.medication, intervalMinutes: regularParacetamol.interval_minutes, baseTimes: regularParacetamol.base_times, paracetamolMg: regularParacetamol.paracetamol_mg, containsTramadol: false };
+    }
+    if (plan.id === "prn" && prnRow) {
+      return { ...plan, label: prnRow.label, medication: prnRow.medication, intervalMinutes: prnRow.interval_minutes, baseTimes: prnRow.base_times, paracetamolMg: prnRow.paracetamol_mg, containsTramadol: Boolean(prnRow.contains_tramadol) };
+    }
+    return plan;
+  }));
 }
 
 function mapDbEventToApp(row) {
@@ -292,7 +340,7 @@ function MedicationSchedulePWA() {
   const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" });
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
-  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); setData((current) => normalizeAppState({ ...current, events: mergeEventsPreferNewest(current.events, remoteEvents, current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
+  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); let nextSettings = null; try { const { data: authData } = await supabase.auth.getUser(); const userId = authData?.user?.id; if (userId) { const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([supabase.from("user_plans").select("*").eq("user_id", userId), supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()]); if (userPlansError) throw userPlansError; if (userSettingsError) throw userSettingsError; nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) }; if (userSettingsRow) { nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes; nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) }; } } else { logSupabase("sync:read:settings:skipped", { reason: "no-auth-user" }); } } catch (error) { logSupabaseError("sync:read:settings", error); } setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; function handler(event) { event.preventDefault(); setInstallPromptEvent(event); } window.addEventListener("beforeinstallprompt", handler); return () => window.removeEventListener("beforeinstallprompt", handler); }, []);
@@ -302,10 +350,35 @@ function MedicationSchedulePWA() {
   function updateUI(nextUi) { setData((current) => ({ ...current, ui: nextUi })); }
   function updateSettings(nextSettings) { setData((current) => ({ ...current, settings: { ...current.settings, ...nextSettings, reminders: { ...current.settings.reminders, ...((nextSettings && nextSettings.reminders) || {}) }, plans: Array.isArray(nextSettings && nextSettings.plans) ? normalizePlans(nextSettings.plans) : current.settings.plans } })); }
   function resetSettings() { setData((current) => ({ ...current, settings: cloneDefaultSettings() })); }
-  async function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: crypto.randomUUID(), planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); if (supabase) { try { const dbEvent = mapAppEventToDb(nextEvent); const items = getDoseItemsForEvent(nextEvent, data.settings.plans); logSupabase("event:insert:attempt", { eventId: dbEvent.id, planId: dbEvent.plan_id, status: dbEvent.status, actualAt: dbEvent.actual_at, itemCount: items.length }); const { data: createdId, error } = await supabase.rpc("log_dose_event", { p_plan_id: dbEvent.plan_id, p_status: dbEvent.status, p_scheduled_for: null, p_actual_at: dbEvent.actual_at, p_note: dbEvent.note, p_pain_before: dbEvent.pain_before, p_pain_after: dbEvent.pain_after, p_items: items }); if (error) throw error; if (createdId && createdId !== nextEvent.id) { setData((current) => ({ ...current, events: normalizeEvents(current.events.map((event) => (event.id === nextEvent.id ? { ...event, id: createdId } : event)), current.settings.plans) })); } logSupabase("event:insert:success", { eventId: createdId || dbEvent.id }); } catch (error) { logSupabaseError("event:insert", error, { eventId: nextEvent.id }); } } else { logSupabase("event:insert:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId: nextEvent.id }); } closeSheet(); }
+  async function addEvent(payload) { const plan = planMap[payload.planId]; if (!plan) return; const nextEvent = { id: crypto.randomUUID(), planId: payload.planId, status: payload.status, actualAt: new Date(payload.actualAt).toISOString(), note: payload.note || "", painBefore: payload.painBefore, painAfter: payload.painAfter, createdAt: new Date().toISOString(), containsTramadol: Boolean(plan.containsTramadol) }; setData((current) => ({ ...current, events: normalizeEvents([...current.events, nextEvent], current.settings.plans) })); if (supabase) { try { const dbEvent = mapAppEventToDb(nextEvent); const items = getDoseItemsForEvent(nextEvent, data.settings.plans); logSupabase("event:insert:attempt", { eventId: dbEvent.id, planId: dbEvent.plan_id, status: dbEvent.status, actualAt: dbEvent.actual_at, itemCount: items.length }); let createdId = null; const rpcRes = await supabase.rpc("log_dose_event", { p_plan_id: dbEvent.plan_id, p_status: dbEvent.status, p_scheduled_for: null, p_actual_at: dbEvent.actual_at, p_note: dbEvent.note, p_pain_before: dbEvent.pain_before, p_pain_after: dbEvent.pain_after, p_items: items }); if (!rpcRes.error) { createdId = rpcRes.data; } else { logSupabaseError("event:insert:rpc", rpcRes.error, { fallback: "direct-insert" }); const { data: inserted, error: insertError } = await supabase.from(EVENTS_TABLE).insert({ plan_id: dbEvent.plan_id, status: dbEvent.status, scheduled_for: null, actual_at: dbEvent.actual_at, note: dbEvent.note, pain_before: dbEvent.pain_before, pain_after: dbEvent.pain_after }).select("id").single(); if (insertError) throw insertError; createdId = inserted?.id || null; if (items.length && createdId) { const payloadItems = items.map((item) => ({ dose_event_id: createdId, ...item })); const { error: itemError } = await supabase.from("dose_event_items").insert(payloadItems); if (itemError) throw itemError; } } if (createdId && createdId !== nextEvent.id) { setData((current) => ({ ...current, events: normalizeEvents(current.events.map((event) => (event.id === nextEvent.id ? { ...event, id: createdId } : event)), current.settings.plans) })); } logSupabase("event:insert:success", { eventId: createdId || dbEvent.id }); } catch (error) { logSupabaseError("event:insert", error, { eventId: nextEvent.id }); } } else { logSupabase("event:insert:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId: nextEvent.id }); } closeSheet(); }
   async function deleteEvent(eventId) { if (isBrowser() && typeof window.confirm === "function") { const confirmed = window.confirm("Delete this event?"); if (!confirmed) return; } setData((current) => ({ ...current, events: current.events.filter((event) => event.id !== eventId) })); if (supabase) { try { logSupabase("event:delete:attempt", { eventId }); const { error } = await supabase.from(EVENTS_TABLE).delete().eq("id", eventId); if (error) throw error; logSupabase("event:delete:success", { eventId }); } catch (error) { logSupabaseError("event:delete", error, { eventId }); } } else { logSupabase("event:delete:skipped", { reason: "missing supabase client", hasSupabaseClient: Boolean(supabase), eventId }); } }
   async function requestNotifications() { if (typeof Notification === "undefined") { alert("Notifications are not supported in this preview environment."); return; } try { const permission = await Notification.requestPermission(); setNotificationPermission(permission); } catch (error) { console.error("Notification permission request failed", error); } }
   async function handleInstall() { if (!installPromptEvent) return; try { if (typeof installPromptEvent.prompt === "function") installPromptEvent.prompt(); if (installPromptEvent.userChoice) await installPromptEvent.userChoice; } catch (error) { console.error("Install prompt failed", error); } finally { setInstallPromptEvent(null); } }
+
+  useEffect(() => {
+    if (!mounted || !supabase) return;
+    (async () => {
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
+        if (!userId) {
+          logSupabase("settings:sync:skipped", { reason: "no-auth-user" });
+          return;
+        }
+        const planRows = data.settings.plans.map((plan) => mapPlanToUserPlanRow(plan, userId)).filter(Boolean);
+        if (planRows.length) {
+          const { error: plansError } = await supabase.from("user_plans").upsert(planRows, { onConflict: "user_id,plan_id" });
+          if (plansError) throw plansError;
+        }
+        const payload = { user_id: userId, tramadol_spacing_minutes: data.settings.tramadolSpacingMinutes, reminders: data.settings.reminders, history_filter: data.ui.historyFilter };
+        const { error: settingsError } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
+        if (settingsError) throw settingsError;
+        logSupabase("settings:sync:success", { planCount: planRows.length });
+      } catch (error) {
+        logSupabaseError("settings:sync", error);
+      }
+    })();
+  }, [mounted, data.settings, data.ui.historyFilter]);
 
   return <div className="min-h-screen bg-slate-50 text-slate-900"><AppHeader installPromptEvent={installPromptEvent} onInstall={handleInstall} /><main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8"><nav className="grid grid-cols-3 gap-2 rounded-3xl border border-slate-200 bg-white p-2 shadow-sm w-full sm:w-fit">{[["today", "Today"], ["log", "History"], ["settings", "Settings"]].map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={classNames("rounded-2xl px-4 py-3 text-sm font-semibold transition", tab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50")}>{label}</button>)}</nav>{tab === "today" ? <div className="mt-6 space-y-4"><OverviewCard regularStates={regularStates} prnState={prnState} lastTramadol={lastTramadol} paracetamolToday={paracetamolToday} settings={data.settings} effectiveNow={effectiveNow} onOpen={openSheet} /><RecentEventsPanel events={data.events} plans={data.settings.plans} onDelete={deleteEvent} /></div> : null}{tab === "log" ? <section className="mt-6"><HistoryPanel events={data.events} plans={data.settings.plans} filter={data.ui.historyFilter} onFilterChange={(historyFilter) => updateUI({ ...data.ui, historyFilter })} effectiveNow={effectiveNow} onDelete={deleteEvent} /></section> : null}{tab === "settings" ? <section className="mt-6"><SettingsPanel settings={data.settings} onChange={updateSettings} onReset={resetSettings} notificationPermission={notificationPermission} onRequestNotifications={requestNotifications} /></section> : null}</main><ActionSheet open={sheet.open} plans={data.settings.plans} events={data.events} settings={data.settings} effectiveNow={effectiveNow} sheet={sheet} onClose={closeSheet} onConfirm={addEvent} /></div>;
 }
