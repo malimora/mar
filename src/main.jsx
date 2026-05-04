@@ -164,7 +164,7 @@ function ActionSheet({ open, plans, events, settings, effectiveNow, sheet, onClo
   const [painBefore, setPainBefore] = useState("");
   const [painAfter, setPainAfter] = useState("");
   const [note, setNote] = useState("");
-  useEffect(() => { if (!open) return; setStatus(sheet.status || "taken"); setActualAt(toLocalInputValue(effectiveNow)); setPainBefore(""); setPainAfter(""); setNote(""); }, [open, sheet.status, sheet.planId, effectiveNow]);
+  useEffect(() => { if (!open) return; setStatus(sheet.status || "taken"); setActualAt(toLocalInputValue(effectiveNow)); setPainBefore(""); setPainAfter(""); setNote(""); }, [open, sheet.status, sheet.planId]);
   if (!open || !plan) return null;
   const actualDate = fromLocalInputValue(actualAt);
   const spacingWarning = status === "taken" && actualDate ? getSpacingWarning(events, plans, plan.id, actualDate, settings.tramadolSpacingMinutes) : null;
