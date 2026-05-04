@@ -222,23 +222,16 @@ function toAppPlanId(dbPlanId) {
   return "prn";
 }
 
-
-
-function toDbPlanIdForSettings(appPlanId) {
-  return toDbPlanId(appPlanId);
-}
-
-function mapPlanToUserPlanRow(plan, userId) {
-  const dbPlanId = toDbPlanIdForSettings(plan.id);
-  if (!dbPlanId || !userId) return null;
+function mapPlanToUserPlanRow(plan) {
+  const dbPlanId = toDbPlanId(plan.id);
+  if (!dbPlanId) return null;
   return {
-    user_id: userId,
     plan_id: dbPlanId,
     label: plan.label,
     medication: plan.medication,
     interval_minutes: Number(plan.intervalMinutes) || 1,
     base_times: Array.isArray(plan.baseTimes) ? plan.baseTimes : [],
-        kind: plan.kind,
+    kind: plan.kind,
     paracetamol_mg: Number(plan.paracetamolMg) || 0,
     tramadol_mg: Number(plan.tramadolMg) || 0,
   };
@@ -335,7 +328,7 @@ function MedicationSchedulePWA() {
   const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [settingsSaveStatus, setSettingsSaveStatus] = useState("idle"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" }); const [authReady, setAuthReady] = useState(!supabase); const [session, setSession] = useState(null); const [authEmail, setAuthEmail] = useState(""); const [authPassword, setAuthPassword] = useState(""); const [authBusy, setAuthBusy] = useState(false); const [authError, setAuthError] = useState("");
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
-  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); let nextSettings = null; try { const { data: authData } = await supabase.auth.getUser(); const userId = authData?.user?.id; if (userId) { const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([supabase.from("user_plans").select("*").eq("user_id", userId), supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle()]); if (userPlansError) throw userPlansError; if (userSettingsError) throw userSettingsError; nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) }; if (userSettingsRow) { nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes; nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) }; } } else { logSupabase("sync:read:settings:skipped", { reason: "no-auth-user" }); } } catch (error) { logSupabaseError("sync:read:settings", error); } setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
+  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); let nextSettings = null; try { const { data: authData } = await supabase.auth.getUser(); const userId = authData?.user?.id; if (userId) { const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([supabase.from("user_plans").select("*"), supabase.from("user_settings").select("*").eq("id", 1).maybeSingle()]); if (userPlansError) throw userPlansError; if (userSettingsError) throw userSettingsError; nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) }; if (userSettingsRow) { nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes; nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) }; } } else { logSupabase("sync:read:settings:skipped", { reason: "no-auth-user" }); } } catch (error) { logSupabaseError("sync:read:settings", error); } setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
   useEffect(() => {
@@ -396,13 +389,13 @@ function MedicationSchedulePWA() {
           logSupabase("settings:sync:skipped", { reason: "no-auth-user" });
           return;
         }
-        const planRows = data.settings.plans.map((plan) => mapPlanToUserPlanRow(plan, userId)).filter(Boolean);
+        const planRows = data.settings.plans.map((plan) => mapPlanToUserPlanRow(plan)).filter(Boolean);
         if (planRows.length) {
-          const { error: plansError } = await supabase.from("user_plans").upsert(planRows, { onConflict: "user_id,plan_id" });
+          const { error: plansError } = await supabase.from("user_plans").upsert(planRows, { onConflict: "plan_id" });
           if (plansError) throw plansError;
         }
-        const payload = { user_id: userId, tramadol_spacing_minutes: data.settings.tramadolSpacingMinutes, reminders: data.settings.reminders, history_filter: data.ui.historyFilter };
-        const { error: settingsError } = await supabase.from("user_settings").upsert(payload, { onConflict: "user_id" });
+        const payload = { id: 1, tramadol_spacing_minutes: data.settings.tramadolSpacingMinutes, reminders: data.settings.reminders, history_filter: data.ui.historyFilter };
+        const { error: settingsError } = await supabase.from("user_settings").upsert(payload, { onConflict: "id" });
         if (settingsError) throw settingsError;
         logSupabase("settings:sync:success", { planCount: planRows.length });
         setSettingsSaveStatus("saved");
