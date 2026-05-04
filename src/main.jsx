@@ -354,45 +354,7 @@ function MedicationSchedulePWA() {
   const [mounted, setMounted] = useState(false); const [tab, setTab] = useState("today"); const [settingsSaveStatus, setSettingsSaveStatus] = useState("idle"); const [liveNow, setLiveNow] = useState(new Date()); const [data, setData] = useState(getInitialState()); const [installPromptEvent, setInstallPromptEvent] = useState(null); const [notificationPermission, setNotificationPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported"); const [sheet, setSheet] = useState({ open: false, planId: null, status: "taken" }); const [authReady, setAuthReady] = useState(!supabase); const [session, setSession] = useState(null); const [authEmail, setAuthEmail] = useState(""); const [authPassword, setAuthPassword] = useState(""); const [authBusy, setAuthBusy] = useState(false); const [authError, setAuthError] = useState("");
   useEffect(() => { setMounted(true); if (!isBrowser()) return; try { const raw = window.localStorage.getItem(STORAGE_KEY); if (raw) setData(normalizeAppState(JSON.parse(raw))); } catch (error) { console.error("Failed to load saved medication data", error); } }, []);
 
-  useEffect(() => {
-    if (!mounted || !supabase || !authReady || !session?.user?.id) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        logSupabase("sync:read:attempt", { userId: session.user.id });
-        const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true });
-        if (error) throw error;
-        if (cancelled) return;
-        logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0, userId: session.user.id });
-        const remoteEvents = (rows || []).map(mapDbEventToApp);
-
-        let nextSettings = null;
-        try {
-          const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([
-            supabase.from("user_plans").select("*"),
-            supabase.from("user_settings").select("*").eq("id", 1).maybeSingle(),
-          ]);
-          if (userPlansError) throw userPlansError;
-          if (userSettingsError) throw userSettingsError;
-          nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) };
-          if (userSettingsRow) {
-            nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes;
-            nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) };
-          }
-        } catch (error) {
-          logSupabaseError("sync:read:settings", error, { userId: session.user.id });
-        }
-
-        setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) }));
-      } catch (error) {
-        logSupabaseError("sync:read", error, { userId: session.user.id });
-      }
-    })();
-    return () => {
-      cancelled = true;
-      logSupabase("sync:read:cancelled", { userId: session.user.id });
-    };
-  }, [mounted, authReady, session?.user?.id]);
+  useEffect(() => { if (!mounted || !supabase) return; let cancelled = false; (async () => { try { logSupabase("sync:read:attempt"); const { data: rows, error } = await supabase.from(EVENTS_TABLE).select("*, dose_event_items(medication_code, dose_mg)").order("actual_at", { ascending: true }); if (error) throw error; if (cancelled) return; logSupabase("sync:read:success", { rowCount: Array.isArray(rows) ? rows.length : 0 }); const remoteEvents = (rows || []).map(mapDbEventToApp); let nextSettings = null; try { const { data: authData } = await supabase.auth.getUser(); const userId = authData?.user?.id; if (userId) { const [{ data: userPlanRows, error: userPlansError }, { data: userSettingsRow, error: userSettingsError }] = await Promise.all([supabase.from("user_plans").select("*"), supabase.from("user_settings").select("*").eq("id", 1).maybeSingle()]); if (userPlansError) throw userPlansError; if (userSettingsError) throw userSettingsError; nextSettings = { plans: mapUserPlanRowsToAppPlans(userPlanRows || [], cloneDefaultPlans()) }; if (userSettingsRow) { nextSettings.tramadolSpacingMinutes = userSettingsRow.tramadol_spacing_minutes; nextSettings.reminders = { ...DEFAULT_SETTINGS.reminders, ...(userSettingsRow.reminders || {}) }; } } else { logSupabase("sync:read:settings:skipped", { reason: "no-auth-user" }); } } catch (error) { logSupabaseError("sync:read:settings", error); } setData((current) => normalizeAppState({ ...current, settings: nextSettings ? { ...current.settings, ...nextSettings } : current.settings, events: mergeEventsPreferNewest(current.events, remoteEvents, (nextSettings && nextSettings.plans) || current.settings.plans) })); } catch (error) { logSupabaseError("sync:read", error); } })(); return () => { cancelled = true; logSupabase("sync:read:cancelled"); }; }, [mounted]);
   useEffect(() => { if (!isBrowser()) return undefined; const timer = window.setInterval(() => setLiveNow(new Date()), 30000); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (!mounted || !isBrowser()) return; try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (error) { console.error("Failed to save medication data", error); } }, [data, mounted]);
   useEffect(() => {
