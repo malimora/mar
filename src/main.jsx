@@ -96,7 +96,7 @@ const STORAGE_KEY = "med-schedule-pwa-v6";
 const DEFAULT_PLANS = [
   { id: "regular-tramadol", label: "Regular Tramadol", medication: "Tramadol 50mg", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], kind: "required", paracetamolMg: 0, tramadolMg: 50 },
   { id: "regular-paracetamol", label: "Regular Paracetamol", medication: "Paracetamol 500mg", intervalMinutes: 360, baseTimes: ["06:00", "12:00", "18:00", "00:00"], kind: "required", paracetamolMg: 500, tramadolMg: 0 },
-  { id: "prn", label: "As needed", medication: "PRN Tramadol 50mg", intervalMinutes: 240, baseTimes: ["10:00", "16:00", "22:00"], kind: "optional", paracetamolMg: 0, tramadolMg: 50 },
+  { id: "prn", label: "As-needed Tramadol", medication: "Tramadol 50 mg", intervalMinutes: 240, baseTimes: ["10:00", "16:00", "22:00"], kind: "optional", paracetamolMg: 0, tramadolMg: 50 },
 ];
 const DEFAULT_SETTINGS = { plans: DEFAULT_PLANS, tramadolSpacingMinutes: 240, reminders: { regularDue: true, prnCheckIn: true, missedRegular: true, midnightDose: true } };
 const DEFAULT_UI = {};
@@ -131,7 +131,7 @@ function filterEventsByHistory(events,filter,now){ const start=getHistoryFilterS
 function summarizeEvents(events, plans){ const planMap=getPlanMap(plans); const takenRegular=events.filter((e)=>planMap[e.planId]?.kind==="required"&&e.status==="taken").length; const takenPrn=events.filter((e)=>e.planId==="prn"&&e.status==="taken").length; const skippedRegular=events.filter((e)=>planMap[e.planId]?.kind==="required"&&e.status==="skipped").length; const notNeededPrn=events.filter((e)=>e.planId==="prn"&&e.status==="not-needed").length; const paracetamolMg=events.filter((e)=>e.status==="taken").reduce((sum,e)=>sum+Number((planMap[e.planId]&&planMap[e.planId].paracetamolMg)||0),0); const highestPain=events.map((e)=>Number(e.painBefore)).filter((v)=>Number.isFinite(v)&&v>=0).sort((a,b)=>b-a)[0]; return {takenRegular,takenPrn,skippedRegular,notNeededPrn,paracetamolMg,highestPain}; }
 function groupEventsByDate(events){ return events.reduce((g,e)=>{const key=new Date(e.actualAt).toDateString(); if(!g[key]) g[key]=[]; g[key].push(e); return g;},{}); }
 function formatStatus(status){ if(status==="not-needed") return "Not needed"; if(status==="skipped") return "Skipped"; return "Taken"; }
-function formatDeviation(ms){ if(!Number.isFinite(ms)) return null; const abs=Math.abs(ms); const min=Math.round(abs/60000); if(!min) return "On time"; return `${ms>=0?"+":"-"}${min} min`; }
+function formatDeviation(ms){ if(!Number.isFinite(ms)) return null; const abs=Math.abs(ms); const min=Math.round(abs/60000); if(!min) return "On time"; if(ms===0) return "On time"; return ms<0?`${min} min early`:`${min} min late`; }
 function toDayKey(d){ const x=new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; }
 function isSameDay(a,b){ return toDayKey(a)===toDayKey(b); }
 function statusTone(status){ if(status==="taken") return "bg-emerald-50 text-emerald-700 border-emerald-200"; if(status==="late"||status==="due-now") return "bg-amber-50 text-amber-700 border-amber-200"; if(status==="missed") return "bg-rose-50 text-rose-700 border-rose-200"; return "bg-slate-100 text-slate-700 border-slate-200"; }
@@ -144,34 +144,37 @@ function SummaryTile({ label, value }) { return <div className="rounded-2xl bg-s
 function OverviewMetric({ label, value }) { return <div className="rounded-2xl bg-white/80 p-3 ring-1 ring-slate-200"><div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</div><div className="mt-1 text-sm font-semibold text-slate-900">{value}</div></div>; }
 
 function TodayDashboard({ events, plans, prnState, effectiveNow, onOpen, onDelete }) {
-  const regularPlanIds = ["regular-paracetamol","regular-tramadol"];
-  const regularEvents = events.filter((e) => regularPlanIds.includes(e.planId) && e.status==="taken" && isSameDay(e.actualAt, effectiveNow));
-  const sortedRegular = [...regularEvents].sort((a,b)=>new Date(a.actualAt)-new Date(b.actualAt));
+  const regularPlans = plans.filter((p) => p.kind === "required");
   const slots = ["06:00","12:00","18:00","00:00"].map((time) => {
     const [h,m] = time.split(":").map(Number); const scheduled = new Date(effectiveNow); scheduled.setHours(h,m,0,0);
-    const matched = sortedRegular.find((e)=>Math.abs(new Date(e.actualAt).getTime()-scheduled.getTime())<3*3600000);
-    const delta = matched ? new Date(matched.actualAt).getTime()-scheduled.getTime() : null;
-    const status = matched ? "taken" : effectiveNow.getTime()>scheduled.getTime()+90*60000 ? "missed" : Math.abs(effectiveNow.getTime()-scheduled.getTime())<=30*60000 ? "due-now" : effectiveNow.getTime()>scheduled.getTime() ? "late" : "upcoming";
-    return {time, scheduled, matched, delta, status};
+    const tracks = regularPlans.map((plan) => {
+      const matched = events.find((e)=>e.planId===plan.id && e.status==="taken" && isSameDay(e.actualAt,effectiveNow) && Math.abs(new Date(e.actualAt).getTime()-scheduled.getTime())<3*3600000);
+      const delta = matched ? new Date(matched.actualAt).getTime()-scheduled.getTime() : null;
+      const status = matched ? "taken" : effectiveNow.getTime()>scheduled.getTime()+90*60000 ? "missed" : Math.abs(effectiveNow.getTime()-scheduled.getTime())<=30*60000 ? "due-now" : effectiveNow.getTime()>scheduled.getTime() ? "late" : "upcoming";
+      return { plan, matched, delta, status };
+    });
+    return {time, scheduled, tracks};
   });
-  const nextSlot = slots.find((s)=>!s.matched && s.status!=="missed") || slots[0];
-  const heroTone = statusTone(nextSlot.matched ? "taken" : nextSlot.status);
-  const heroStatus = nextSlot.matched ? `Taken at ${formatTime(nextSlot.matched.actualAt)}` : nextSlot.status==="due-now" ? "Due now" : nextSlot.status==="late" ? `Late by ${formatRelative(effectiveNow.getTime()-nextSlot.scheduled.getTime())}` : `Due in ${formatRelative(nextSlot.scheduled.getTime()-effectiveNow.getTime())}`;
-  const avgDelta = slots.filter((s)=>s.delta!=null).map((s)=>s.delta);
+  const nextSlot = slots.find((s)=>s.tracks.some((t)=>!t.matched && t.status!=="missed")) || slots[0];
+  const primaryTrack = nextSlot.tracks[0];
+  const heroTone = statusTone(primaryTrack?.matched ? "taken" : (primaryTrack?.status || "upcoming"));
+  const heroStatus = primaryTrack?.matched ? `Taken at ${formatTime(primaryTrack.matched.actualAt)}` : primaryTrack?.status==="due-now" ? "Due now" : primaryTrack?.status==="late" ? `Late by ${formatRelative(effectiveNow.getTime()-nextSlot.scheduled.getTime())}` : `Due in ${formatRelative(nextSlot.scheduled.getTime()-effectiveNow.getTime())}`;
+  const avgDelta = slots.flatMap((s)=>s.tracks.filter((t)=>t.delta!=null).map((t)=>t.delta));
   const avgDelay = avgDelta.length ? Math.round(avgDelta.reduce((a,b)=>a+b,0)/avgDelta.length/60000) : null;
+  const sortedRegular = events.filter((e) => regularPlans.some((plan) => plan.id === e.planId) && e.status === "taken").sort((a, b) => new Date(a.actualAt) - new Date(b.actualAt));
   const painPair = sortedRegular.find((e)=>e.painBefore!=null && e.painAfter!=null);
   const todayEvents = [...events].filter((e)=>isSameDay(e.actualAt,effectiveNow)).sort((a,b)=>new Date(a.actualAt)-new Date(b.actualAt));
   return <div className="space-y-4">
     <div className="flex items-end justify-between"><div><h2 className="text-2xl font-semibold text-slate-900">Today</h2><p className="text-sm text-slate-500">{formatDateTime(effectiveNow)}</p></div></div>
-    <section className={classNames("rounded-3xl border p-6 shadow-sm", heroTone)}><p className="text-sm font-medium">Next regular dose</p><p className="mt-2 text-4xl font-semibold">{nextSlot.time}</p><p className="mt-3 text-sm">Paracetamol 500 mg · Tramadol 15 mg</p><p className="mt-2 text-sm font-semibold">{heroStatus}</p><button onClick={()=>onOpen("regular-paracetamol","taken")} className="mt-4 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white">Log as taken</button></section>
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-semibold">Today’s regular plan</h3><div className="mt-4 grid gap-2 sm:grid-cols-4">{slots.map((slot)=><div key={slot.time} className="rounded-2xl border border-slate-200 p-3"><div className="text-sm font-semibold">{slot.time}</div><div className={classNames("mt-2 inline-flex rounded-full border px-2 py-0.5 text-xs", statusTone(slot.matched?"taken":slot.status))}>{slot.matched?"Taken":slot.status==="due-now"?"Due now":slot.status==="late"?"Late":slot.status==="missed"?"Missed":"Upcoming"}</div>{slot.matched?<div className="mt-2 text-xs text-slate-500">at {formatTime(slot.matched.actualAt)}</div>:null}{slot.delta!=null?<div className="mt-2 text-xs text-slate-500">{formatDeviation(slot.delta)}</div>:null}</div>)}</div></section>
+    <section className={classNames("rounded-3xl border p-6 shadow-sm", heroTone)}><p className="text-sm font-medium">Next scheduled medication</p><p className="mt-2 text-4xl font-semibold">{nextSlot.time}</p>{nextSlot.tracks.map((track)=><div key={track.plan.id} className="mt-2 flex items-center justify-between"><span className="text-sm">{track.plan.medication}</span><button onClick={()=>onOpen(track.plan.id,"taken")} className="rounded-xl bg-slate-900 px-3 py-1 text-xs font-semibold text-white">Log</button></div>)}<p className="mt-2 text-sm font-semibold">{heroStatus}</p></section>
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-semibold">Today’s regular plan</h3><div className="mt-4 space-y-3">{slots.map((slot)=><div key={slot.time} className="rounded-2xl border border-slate-200 p-3"><div className="text-sm font-semibold">{slot.time}</div>{slot.tracks.map((track)=><div key={track.plan.id} className="mt-2 text-xs text-slate-600">{track.plan.medication}: {track.matched?`Taken at ${formatTime(track.matched.actualAt)}, ${formatDeviation(track.delta)}`:"Upcoming"} {!track.matched?<button onClick={()=>onOpen(track.plan.id,'taken')} className="ml-2 rounded border px-2 py-0.5">Log</button>:null}</div>)}</div>)}</div></section>
     <div className="grid gap-4 lg:grid-cols-3">
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Regular dose</h3><p className="mt-2 text-sm">Paracetamol 500 mg</p><p className="text-sm">Tramadol 15 mg</p><p className="mt-2 text-sm text-slate-600">Every 6 hours</p><p className="text-sm text-slate-600">06:00 · 12:00 · 18:00 · 00:00</p></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Regular dose</h3><p className="mt-2 text-sm">Paracetamol 500 mg</p><p className="text-sm">Tramadol 50 mg</p><p className="mt-2 text-sm text-slate-600">Every 6 hours</p><p className="text-sm text-slate-600">06:00 · 12:00 · 18:00 · 00:00</p></section>
       <section className="rounded-3xl border border-indigo-200 bg-indigo-50/60 p-4 shadow-sm"><h3 className="font-semibold text-indigo-900">As-needed medication</h3><p className="mt-2 text-sm">Tramadol</p><p className="text-sm text-indigo-700">Optional breakthrough dose</p><p className="mt-2 text-sm text-indigo-700">{prnState.available?"Available now":`Available from ${formatTime(prnState.availableAt)}`}</p><p className="mt-1 text-sm text-indigo-700">Used today: {events.filter((e)=>e.planId==="prn"&&e.status==="taken"&&isSameDay(e.actualAt,effectiveNow)).length}</p></section>
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Regular progress</h3><p className="mt-2 text-sm">{slots.filter((s)=>s.matched).length} / 4 regular doses taken</p><div className="mt-3 h-2 rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{width:`${(slots.filter((s)=>s.matched).length/4)*100}%`}} /></div></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Regular progress</h3>{regularPlans.map((plan)=>{const taken=slots.filter((s)=>s.tracks.find((t)=>t.plan.id===plan.id&&t.matched)).length; return <p key={plan.id} className="mt-2 text-sm">{plan.medication}: {taken} / 4 taken</p>})}</section>
     </div>
     <div className="grid gap-4 lg:grid-cols-2">
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Timing deviation</h3><p className="mt-2 text-sm">{avgDelay==null?"No timing data yet":`Average delay: ${avgDelay>=0?"+":""}${avgDelay} min`}</p></section>
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Timing deviation</h3><p className="mt-2 text-sm">{avgDelay==null?"No timing data yet":`Usually ${avgDelay<0?`${Math.abs(avgDelay)} min early`:avgDelay>0?`${avgDelay} min late`:"On time"}`}</p></section>
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><h3 className="font-semibold">Pain response</h3><p className="mt-2 text-sm">{painPair?`${painPair.painBefore} → ${painPair.painAfter} after medication (${painPair.painAfter-painPair.painBefore})`:"Log pain before and after doses to see response trends"}</p></section>
     </div>
     <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-semibold">Today timeline</h3><div className="mt-3 space-y-2">{todayEvents.length===0?<p className="text-sm text-slate-500">No events yet today.</p>:todayEvents.map((event)=><div key={event.id} className="flex items-center justify-between rounded-2xl border border-slate-200 p-3 text-sm"><div><div className="font-medium">{formatTime(event.actualAt)} · {event.planId==="prn"?"As-needed":"Regular dose"}</div><div className="text-slate-500">{formatStatus(event.status)}{event.painBefore!=null?` · Pain ${event.painBefore}${event.painAfter!=null?`→${event.painAfter}`:""}`:""}{event.note?` · ${event.note}`:""}</div></div><button onClick={() => onDelete(event.id)} className="rounded-xl border border-slate-200 p-2 text-slate-500"><TrashIcon className="h-4 w-4" /></button></div>)}</div></section>
@@ -341,7 +344,7 @@ function getDoseItemsForEvent(event, plans) {
     items.push({ medication_code: "paracetamol", dose_mg: Number(plan.paracetamolMg) });
   }
   if (Number(plan.tramadolMg) > 0) {
-    items.push({ medication_code: "tramadol", dose_mg: Number(plan.tramadolMg) || 15 });
+    items.push({ medication_code: "tramadol", dose_mg: Number(plan.tramadolMg) || 50 });
   }
   return items;
 }
